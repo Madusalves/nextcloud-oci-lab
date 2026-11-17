@@ -1,0 +1,66 @@
+# Nextcloud + PostgreSQL com primary storage no OCI Object Storage (API S3).
+# Variaveis vem de oci-bucket/.env (copie de ../.env.example).
+#
+# ${VAR:?msg} => o compose aborta com "msg" se VAR nao estiver definida.
+
+# Nome do projeto: prefixa volumes/redes (nextcloud-oci_db, nextcloud-oci_nextcloud).
+name: nextcloud-oci
+
+services:
+  db:
+    # Versao principal fixa. 18 e a recomendada para o Nextcloud 35.
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB no .env}
+      POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER no .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      # Postgres 18+: o volume e montado em /var/lib/postgresql (nao mais em .../data).
+      - db:/var/lib/postgresql
+    healthcheck:
+      # $$ = "$" literal; a variavel e resolvida pelo shell DENTRO do container.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    # Versao principal fixa: o Nextcloud so atualiza uma versao principal por vez.
+    image: nextcloud:35-apache
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${NEXTCLOUD_HTTP_PORT:-8080}:80"
+    volumes:
+      # Codigo, config/config.php e o diretorio data (ainda usado para logs,
+      # cache etc., mesmo com object storage).
+      - nextcloud:/var/www/html
+    environment:
+      # --- Instalacao automatica -------------------------------------------
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:?defina NEXTCLOUD_ADMIN_USER no .env}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?defina NEXTCLOUD_ADMIN_PASSWORD no .env}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS:-localhost}
+
+      # --- Banco (todas as 4 obrigatorias, senao cai em SQLite) ----------
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # --- Primary storage S3 ----------------------------------------------
+      OBJECTSTORE_S3_HOST: ${OBJECTSTORE_S3_HOST:?defina OBJECTSTORE_S3_HOST no .env}
+      OBJECTSTORE_S3_PORT: ${OBJECTSTORE_S3_PORT:-443}
+      OBJECTSTORE_S3_SSL: ${OBJECTSTORE_S3_SSL:-true}
+      OBJECTSTORE_S3_REGION: ${OBJECTSTORE_S3_REGION:?defina OBJECTSTORE_S3_REGION no .env}
+      OBJECTSTORE_S3_BUCKET: ${OBJECTSTORE_S3_BUCKET:?defina OBJECTSTORE_S3_BUCKET no .env}
+      OBJECTSTORE_S3_USEPATH_STYLE: ${OBJECTSTORE_S3_USEPATH_STYLE:-true}
+      OBJECTSTORE_S3_AUTOCREATE: ${OBJECTSTORE_S3_AUTOCREATE:-false}
+      OBJECTSTORE_S3_KEY: ${OBJECTSTORE_S3_KEY:?defina OBJECTSTORE_S3_KEY no .env}
+      OBJECTSTORE_S3_SECRET: ${OBJECTSTORE_S3_SECRET:?defina OBJECTSTORE_S3_SECRET no .env}
+
+volumes:
+  db:
+  nextcloud:
