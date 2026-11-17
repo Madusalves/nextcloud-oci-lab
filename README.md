@@ -10,7 +10,7 @@
 | Versão | 1.0 |
 | Status | Validado em ambiente local (Fase 1) |
 
-Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bucket do **OCI Object Storage** como armazenamento principal (*primary storage*), através da API compatível com S3. O objetivo é reproduzir localmente a arquitetura usada no ambiente da Capeb e servir de base para o futuro deploy na VM da OCI.
+Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bucket do **OCI Object Storage** como armazenamento principal (*primary storage*), através da API compatível com S3. O objetivo é reproduzir localmente uma arquitetura de produção baseada em OCI e servir de base para o futuro deploy em uma VM da OCI.
 
 ## Sumário
 
@@ -31,7 +31,7 @@ Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bu
 
 ## 1. Objetivo e escopo
 
-O Nextcloud é uma plataforma open source de arquivos e colaboração hospedada pela própria organização. No nosso cenário, o conteúdo dos arquivos é armazenado no **OCI Object Storage**, como já ocorre no ambiente da Capeb.
+O Nextcloud é uma plataforma open source de arquivos e colaboração hospedada pela própria organização. No nosso cenário, o conteúdo dos arquivos é armazenado no **OCI Object Storage**.
 
 **Dentro do escopo deste guia:**
 
@@ -404,7 +404,7 @@ docker compose exec --user www-data app php occ config:list system
 | Fase 2.2 | Usuário de serviço, compartment dedicado e policies de menor privilégio |
 | Fase 3 | Rotina de backup e teste de restauração (banco + bucket) |
 | Fase 4 | Editor de documentos online (Collabora ou OnlyOffice) — requer HTTPS |
-| Comparação | Validar a configuração final contra o `config.php` do ambiente da Capeb |
+| Comparação | Validar a configuração final contra o `config.php` do ambiente de produção |
 
 ## 12. Referências
 
