@@ -1,0 +1,13 @@
+# --- Segredos -------------------------------------------------------------
+# Arquivos .env guardam credenciais reais (OCI Customer Secret Key, senhas
+# do banco, senha do admin). Sem barra inicial = vale em qualquer pasta
+# (oci-bucket/.env, local-rustfs/.env, ...).
+.env
+.env.*
+
+# O modelo com valores ficticios DEVE ser versionado.
+!.env.example
+
+# --- Arquivos do sistema operacional -------------------------------------
+.DS_Store
+Thumbs.db
