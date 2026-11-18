@@ -40,9 +40,10 @@ O Nextcloud é uma plataforma open source de arquivos e colaboração hospedada 
 - Subida do Nextcloud + PostgreSQL com Docker Compose, apontando para o bucket;
 - Redis para cache distribuído, locks de arquivo e sessões PHP;
 - Container de cron para as tarefas em segundo plano;
-- Acesso e validação do ambiente.
+- Acesso e validação do ambiente;
+- Setup alternativo com S3 local e gratuito (RustFS), fora da OCI — **configurado, ainda não validado** (ver [seção 7.7](#77-setup-alternativo-com-rustfs)).
 
-**Fora do escopo (próximas fases):** S3 local (RustFS), deploy na VM da OCI, HTTPS/proxy reverso, backup e editor de documentos online.
+**Fora do escopo (próximas fases):** deploy na VM da OCI, HTTPS/proxy reverso, backup e editor de documentos online.
 
 ## 2. Ambiente testado
 
@@ -197,7 +198,10 @@ nextcloud-oci-lab/
 ├── .env.example          # modelo com todas as variáveis (valores fictícios)
 ├── README.md             # este guia
 ├── assets/               # imagens do guia
-└── oci-bucket/
+├── oci-bucket/           # primary storage no OCI Object Storage (validado)
+│   ├── .env              # valores reais — NÃO versionar
+│   └── docker-compose.yml
+└── local-rustfs/         # primary storage num S3 local, RustFS (não validado)
     ├── .env              # valores reais — NÃO versionar
     └── docker-compose.yml
 ```
@@ -431,6 +435,44 @@ Na primeira execução, o próprio `cron.php` muda o modo de AJAX para **Cron** 
 >
 > Foi verificado que o `busybox crond` repassa as variáveis do container para o `cron.php`. A âncora `x-nextcloud-env` garante que os dois serviços recebam exatamente o mesmo ambiente.
 
+### 7.7 Setup alternativo com RustFS
+
+> [!WARNING]
+> **Status: configurado, mas não validado de ponta a ponta.** O compose é válido e a parte do Nextcloud foi comparada com o setup da OCI (idêntica). O RustFS foi testado isoladamente — healthcheck, criação de bucket e autenticação SigV4 —, mas a instalação do Nextcloud sobre ele ainda não foi executada.
+
+A pasta `local-rustfs/` permite rodar o mesmo ambiente **sem depender da OCI**, usando o [RustFS](https://github.com/rustfs/rustfs) — um servidor S3 open source — como primary storage. Útil para desenvolvimento e testes sem consumir a cota do Always Free (20 GB e 50.000 requisições de API por mês no Object Storage).
+
+**Para o Nextcloud, entre local e OCI só muda o `.env`.** O `local-rustfs/docker-compose.yml` é o mesmo compose da OCI, com:
+
+- **`name: nextcloud-local`** — outro projeto, portanto outros volumes (`nextcloud-local_*`). As duas instalações nunca compartilham banco ou volume;
+- **serviço `rustfs`** — o servidor S3 local (`rustfs/rustfs:1.0.6`, versão exata, pois o projeto lança versões quase semanalmente). Usa como credencial os mesmos `OBJECTSTORE_S3_KEY`/`_SECRET` do `.env`; a API S3 (porta 9000) fica só na rede interna e o console web (9001) é publicado apenas em `127.0.0.1`;
+- **serviço `rustfs-init`** — container *one-shot* com o AWS CLI que cria o bucket se ele não existir (`head-bucket || create-bucket`, idempotente) e termina. O `app` só sobe após ele terminar com sucesso (`condition: service_completed_successfully`). Assim o bucket já existe quando o Nextcloud inicia — como na OCI — e `OBJECTSTORE_S3_AUTOCREATE=false` vale para os dois ambientes.
+
+Diferenças no `.env`:
+
+| Variável | OCI (`oci-bucket/.env`) | Local (`local-rustfs/.env`) |
+|---|---|---|
+| `OBJECTSTORE_S3_HOST` | `<namespace>.compat.objectstorage.<region>.oraclecloud.com` | `rustfs` (nome do serviço) |
+| `OBJECTSTORE_S3_PORT` | `443` | `9000` |
+| `OBJECTSTORE_S3_SSL` | `true` | `false` |
+| `OBJECTSTORE_S3_REGION` | região da OCI (validada na assinatura) | qualquer valor (o RustFS não valida a região) |
+| `OBJECTSTORE_S3_KEY` / `_SECRET` | Customer Secret Key da OCI | credenciais inventadas (só letras e números, 20+ caracteres) — **não reutilize as da OCI** |
+| `NEXTCLOUD_HTTP_PORT` | `8080` | `8081` (permite rodar os dois ao mesmo tempo) |
+
+Como subir (procedimento previsto, a validar):
+
+```powershell
+Copy-Item .env.example local-rustfs\.env   # e preencha conforme a tabela acima
+cd local-rustfs
+docker compose config --quiet; if ($?) { "OK" }
+docker compose up -d
+docker compose ps -a              # rustfs-init deve aparecer como "Exited (0)"
+docker compose logs rustfs-init   # "bucket nextcloud-teste criado"
+docker compose logs -f app        # "Nextcloud was successfully installed"
+```
+
+Validação prevista: Nextcloud em `http://localhost:8081` e console do RustFS em `http://127.0.0.1:9001` (login com a key e a secret do `.env` local), onde os objetos `urn:oid:*` devem aparecer no bucket.
+
 ## 8. Subindo o ambiente
 
 Na pasta `oci-bucket`:
@@ -567,7 +609,7 @@ Na interface: **Configurações de administração → Configurações básicas 
 | Fase | Atividade |
 |---|---|
 | ~~Fase 1.1~~ ✅ | ~~Adicionar Redis (cache/locking) e container de cron ao compose~~ — concluída |
-| Fase 1.2 | Repetir o laboratório com S3 local (RustFS) para desenvolvimento sem depender da OCI — apenas o `.env` muda |
+| Fase 1.2 ⏳ | S3 local (RustFS) para desenvolvimento sem depender da OCI — **configurada, pendente de validação** ([seção 7.7](#77-setup-alternativo-com-rustfs)) |
 | Fase 2 | Deploy na VM da OCI com o mesmo compose |
 | Fase 2.1 | Proxy reverso com HTTPS, trusted domains e regras de rede (Security List/NSG + firewall do SO) |
 | Fase 2.2 | Usuário de serviço, compartment dedicado e policies de menor privilégio |
@@ -581,6 +623,7 @@ Na interface: **Configurações de administração → Configurações básicas 
 - [Imagem oficial do Nextcloud (variáveis de ambiente)](https://github.com/nextcloud/docker)
 - [Imagem oficial do PostgreSQL](https://hub.docker.com/_/postgres)
 - [Imagem oficial do Redis](https://hub.docker.com/_/redis)
+- [RustFS (GitHub)](https://github.com/rustfs/rustfs) e [instalação com Docker](https://docs.rustfs.com/installation/docker/)
 - [Nextcloud — Memory caching](https://docs.nextcloud.com/server/stable/admin_manual/configuration_server/caching_configuration.html)
 - [Nextcloud — Background jobs](https://docs.nextcloud.com/server/stable/admin_manual/configuration_server/background_jobs_configuration.html)
 - [Exemplo oficial com Postgres + Redis + cron (nextcloud/docker)](https://github.com/nextcloud/docker/blob/master/.examples/docker-compose/insecure/postgres/apache/compose.yaml)
