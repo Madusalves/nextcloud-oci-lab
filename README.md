@@ -846,6 +846,8 @@ ssh -i "$HOME\.ssh\oci_nextcloud_vm" -N -L 8090:127.0.0.1:8080 ubuntu@<IP-PUBLIC
 
 Acesse **`http://localhost:8090`**. Apesar do `http://`, o tráfego entre o PC e a VM está criptografado pelo SSH.
 
+![Nextcloud da VM acessado pelo túnel SSH em localhost:8090](assets/12-nextcloud-vm-tunel-ssh.png)
+
 Validação na VM:
 
 ```bash
@@ -862,9 +864,9 @@ docker compose exec -u www-data app php occ config:app:get core backgroundjobs_m
 - [x] `.env` enviado por `scp`, com permissão `600`, bucket `nextcloud-vm` e porta `127.0.0.1:8080`
 - [x] `memcache.distributed` e `memcache.locking` usando Redis
 - [x] Modo de tarefas em segundo plano = `cron`
-- [ ] `ss -tlnp` mostra o Nextcloud escutando apenas em `127.0.0.1:8080` *(a confirmar)*
-- [ ] Login pelo túnel SSH em `http://localhost:8090` *(a confirmar)*
-- [ ] Objetos `urn:oid:*` no bucket `nextcloud-vm`, e nenhum objeto novo no `nextcloud-teste` *(a confirmar)*
+- [x] `ss -tlnp` mostra o Nextcloud escutando apenas em `127.0.0.1:8080`
+- [x] Login pelo túnel SSH em `http://localhost:8090`
+- [x] Objetos `urn:oid:*` no bucket `nextcloud-vm`, e nenhum objeto novo no `nextcloud-teste`
 
 > [!IMPORTANT]
 > **Limites do Always Free a acompanhar** (página oficial *Always Free Resources*):
@@ -895,7 +897,7 @@ docker compose exec -u www-data app php occ config:app:get core backgroundjobs_m
 |---|---|
 | ~~Fase 1.1~~ ✅ | ~~Adicionar Redis (cache/locking) e container de cron ao compose~~ — concluída |
 | Fase 1.2 ⏳ | S3 local (RustFS) para desenvolvimento sem depender da OCI — **configurada, pendente de validação** ([seção 7.7](#77-setup-alternativo-com-rustfs)) |
-| ~~Fase 2~~ ✅ | ~~Deploy na VM da OCI com o mesmo compose~~ — concluída ([seção 10](#10-deploy-na-vm-da-oci-fase-2)); três verificações finais a confirmar no checklist 10.10 |
+| ~~Fase 2~~ ✅ | ~~Deploy na VM da OCI com o mesmo compose~~ — concluída e validada ([seção 10](#10-deploy-na-vm-da-oci-fase-2)) |
 | Fase 2.1 | Domínio, proxy reverso com HTTPS (Let's Encrypt), trusted domains e abertura das portas 80/443 (Security List/NSG + firewall do SO) |
 | Fase 2.2 | Usuário de serviço, compartment dedicado e policies de menor privilégio |
 | Fase 3 | Rotina de backup e teste de restauração (banco + bucket) |
