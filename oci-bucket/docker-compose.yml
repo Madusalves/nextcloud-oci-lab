@@ -1,10 +1,45 @@
-# Nextcloud + PostgreSQL com primary storage no OCI Object Storage (API S3).
+# Nextcloud + PostgreSQL + Redis + cron, com primary storage no OCI Object Storage (API S3).
 # Variaveis vem de oci-bucket/.env (copie de ../.env.example).
 #
 # ${VAR:?msg} => o compose aborta com "msg" se VAR nao estiver definida.
 
 # Nome do projeto: prefixa volumes/redes (nextcloud-oci_db, nextcloud-oci_nextcloud).
 name: nextcloud-oci
+
+# -----------------------------------------------------------------------------
+# Bloco de ambiente compartilhado entre "app" e "cron".
+# Chaves "x-" sao ignoradas pelo compose; servem para reaproveitar YAML.
+# &nextcloud-env cria a ancora; *nextcloud-env reutiliza o bloco.
+#
+# O cron PRECISA do mesmo ambiente que o app: os arquivos redis.config.php e
+# s3.config.php da imagem leem getenv() a cada execucao do PHP.
+# -----------------------------------------------------------------------------
+x-nextcloud-env: &nextcloud-env
+  # --- Instalacao automatica ---------------------------------------------
+  NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:?defina NEXTCLOUD_ADMIN_USER no .env}
+  NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?defina NEXTCLOUD_ADMIN_PASSWORD no .env}
+  NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS:-localhost}
+
+  # --- Banco (todas as 4 obrigatorias, senao cai em SQLite) ------------
+  POSTGRES_HOST: db
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  # --- Redis: memcache.distributed + memcache.locking + sessoes PHP ----
+  REDIS_HOST: redis
+  REDIS_HOST_PASSWORD: ${REDIS_HOST_PASSWORD:?defina REDIS_HOST_PASSWORD no .env}
+
+  # --- Primary storage S3 ------------------------------------------------
+  OBJECTSTORE_S3_HOST: ${OBJECTSTORE_S3_HOST:?defina OBJECTSTORE_S3_HOST no .env}
+  OBJECTSTORE_S3_PORT: ${OBJECTSTORE_S3_PORT:-443}
+  OBJECTSTORE_S3_SSL: ${OBJECTSTORE_S3_SSL:-true}
+  OBJECTSTORE_S3_REGION: ${OBJECTSTORE_S3_REGION:?defina OBJECTSTORE_S3_REGION no .env}
+  OBJECTSTORE_S3_BUCKET: ${OBJECTSTORE_S3_BUCKET:?defina OBJECTSTORE_S3_BUCKET no .env}
+  OBJECTSTORE_S3_USEPATH_STYLE: ${OBJECTSTORE_S3_USEPATH_STYLE:-true}
+  OBJECTSTORE_S3_AUTOCREATE: ${OBJECTSTORE_S3_AUTOCREATE:-false}
+  OBJECTSTORE_S3_KEY: ${OBJECTSTORE_S3_KEY:?defina OBJECTSTORE_S3_KEY no .env}
+  OBJECTSTORE_S3_SECRET: ${OBJECTSTORE_S3_SECRET:?defina OBJECTSTORE_S3_SECRET no .env}
 
 services:
   db:
@@ -25,6 +60,31 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    # Versao principal fixa; tem build arm64 (VM Ampere da OCI).
+    image: redis:8-alpine
+    restart: unless-stopped
+    # --requirepass: exige senha mesmo na rede interna (defesa em profundidade).
+    # --save "" e --appendonly no: cache puro, sem gravar em disco. Tudo que fica
+    # aqui (cache, locks, sessoes) pode ser reconstruido; por isso nao ha volume.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_HOST_PASSWORD:?defina REDIS_HOST_PASSWORD no .env}
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    environment:
+      # O redis-cli le REDISCLI_AUTH sozinho: healthcheck e testes sem a senha no comando.
+      REDISCLI_AUTH: ${REDIS_HOST_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Sem "ports": acessivel apenas pela rede interna do compose.
+
   app:
     # Versao principal fixa: o Nextcloud so atualiza uma versao principal por vez.
     image: nextcloud:35-apache
@@ -32,34 +92,35 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "${NEXTCLOUD_HTTP_PORT:-8080}:80"
     volumes:
       # Codigo, config/config.php e o diretorio data (ainda usado para logs,
       # cache etc., mesmo com object storage).
       - nextcloud:/var/www/html
-    environment:
-      # --- Instalacao automatica -------------------------------------------
-      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:?defina NEXTCLOUD_ADMIN_USER no .env}
-      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?defina NEXTCLOUD_ADMIN_PASSWORD no .env}
-      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS:-localhost}
+    environment: *nextcloud-env
 
-      # --- Banco (todas as 4 obrigatorias, senao cai em SQLite) ----------
-      POSTGRES_HOST: db
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
-      # --- Primary storage S3 ----------------------------------------------
-      OBJECTSTORE_S3_HOST: ${OBJECTSTORE_S3_HOST:?defina OBJECTSTORE_S3_HOST no .env}
-      OBJECTSTORE_S3_PORT: ${OBJECTSTORE_S3_PORT:-443}
-      OBJECTSTORE_S3_SSL: ${OBJECTSTORE_S3_SSL:-true}
-      OBJECTSTORE_S3_REGION: ${OBJECTSTORE_S3_REGION:?defina OBJECTSTORE_S3_REGION no .env}
-      OBJECTSTORE_S3_BUCKET: ${OBJECTSTORE_S3_BUCKET:?defina OBJECTSTORE_S3_BUCKET no .env}
-      OBJECTSTORE_S3_USEPATH_STYLE: ${OBJECTSTORE_S3_USEPATH_STYLE:-true}
-      OBJECTSTORE_S3_AUTOCREATE: ${OBJECTSTORE_S3_AUTOCREATE:-false}
-      OBJECTSTORE_S3_KEY: ${OBJECTSTORE_S3_KEY:?defina OBJECTSTORE_S3_KEY no .env}
-      OBJECTSTORE_S3_SECRET: ${OBJECTSTORE_S3_SECRET:?defina OBJECTSTORE_S3_SECRET no .env}
+  cron:
+    # MESMA imagem do app; so troca o processo principal: em vez do Apache,
+    # o /cron.sh roda "busybox crond", que executa a crontab do www-data:
+    #   */5 * * * * php -f /var/www/html/cron.php
+    image: nextcloud:35-apache
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Espera o app iniciar (e fazer instalacao/upgrade) antes do primeiro cron.
+      app:
+        condition: service_started
+    volumes:
+      # Tem que ser o MESMO volume do app: o cron.php roda esse codigo e config.
+      - nextcloud:/var/www/html
+    environment: *nextcloud-env
 
 volumes:
   db:
