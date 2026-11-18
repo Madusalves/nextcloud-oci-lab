@@ -1,16 +1,16 @@
 # Nextcloud com OCI Object Storage — Guia de configuração
 
-> Ambiente local com Docker, usando um bucket da OCI como *primary storage* via API compatível com S3.
+> Nextcloud em Docker — localmente e numa VM Always Free da OCI —, usando um bucket da OCI como *primary storage* via API compatível com S3.
 
 | Campo | Valor |
 |---|---|
 | Autora | Maria Eduarda Alves Duarte |
 | Equipe | Statum — Backend & DevOps |
 | Data | 18/11/2026 |
-| Versão | 1.1 |
-| Status | Validado em ambiente local (Fase 1.1 — Redis e cron) |
+| Versão | 2.0 |
+| Status | Fase 2 — deploy na VM Always Free da OCI (Ampere A1) |
 
-Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bucket do **OCI Object Storage** como armazenamento principal (*primary storage*), através da API compatível com S3. O objetivo é reproduzir localmente uma arquitetura de produção baseada em OCI e servir de base para o futuro deploy em uma VM da OCI.
+Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bucket do **OCI Object Storage** como armazenamento principal (*primary storage*), através da API compatível com S3. Primeiro o ambiente é reproduzido localmente (seções 5 a 9); depois, o mesmo compose é implantado numa VM Always Free da OCI (seção 10).
 
 ## Sumário
 
@@ -23,9 +23,10 @@ Este guia descreve, passo a passo, como subir o Nextcloud em Docker usando um bu
 7. [Configuração do projeto](#7-configuração-do-projeto)
 8. [Subindo o ambiente](#8-subindo-o-ambiente)
 9. [Acesso e validação](#9-acesso-e-validação)
-10. [Segurança e boas práticas](#10-segurança-e-boas-práticas)
-11. [Próximos passos](#11-próximos-passos)
-12. [Referências](#12-referências)
+10. [Deploy na VM da OCI (Fase 2)](#10-deploy-na-vm-da-oci-fase-2)
+11. [Segurança e boas práticas](#11-segurança-e-boas-práticas)
+12. [Próximos passos](#12-próximos-passos)
+13. [Referências](#13-referências)
 
 ---
 
@@ -41,9 +42,10 @@ O Nextcloud é uma plataforma open source de arquivos e colaboração hospedada 
 - Redis para cache distribuído, locks de arquivo e sessões PHP;
 - Container de cron para as tarefas em segundo plano;
 - Acesso e validação do ambiente;
-- Setup alternativo com S3 local e gratuito (RustFS), fora da OCI — **configurado, ainda não validado** (ver [seção 7.7](#77-setup-alternativo-com-rustfs)).
+- Setup alternativo com S3 local e gratuito (RustFS), fora da OCI — **configurado, ainda não validado** (ver [seção 7.7](#77-setup-alternativo-com-rustfs));
+- Deploy do mesmo stack numa VM Always Free da OCI (Ampere A1), com rede restrita e acesso por túnel SSH (ver [seção 10](#10-deploy-na-vm-da-oci-fase-2)).
 
-**Fora do escopo (próximas fases):** deploy na VM da OCI, HTTPS/proxy reverso, backup e editor de documentos online.
+**Fora do escopo (próximas fases):** HTTPS/proxy reverso e acesso público, usuário de serviço com menor privilégio, backup e editor de documentos online.
 
 ## 2. Ambiente testado
 
@@ -55,8 +57,12 @@ O Nextcloud é uma plataforma open source de arquivos e colaboração hospedada 
 | Cache / locking | Redis 8.10.3 — imagem `redis:8-alpine` |
 | PHP / Apache | PHP 8.5.12 / Apache 2.4.69 (dentro da imagem) |
 | Região OCI | Brazil East (São Paulo) — `sa-saopaulo-1` (home region) |
-| Bucket | `nextcloud-teste` — compartment raiz, tier Standard |
+| Bucket (local) | `nextcloud-teste` — compartment raiz, tier Standard |
 | Conta OCI | Conta pessoal no modo Always Free (laboratório) |
+| **VM (Fase 2)** | `VM.Standard.A1.Flex` — 2 OCPUs Ampere (arm64), 12 GB RAM |
+| SO da VM | Canonical Ubuntu 24.04.5 LTS (aarch64), kernel `7.0.0-1016-oracle` |
+| Docker na VM | Docker Engine 29.10.0 (arm64) / Docker Compose v5.8.0 |
+| Bucket (VM) | `nextcloud-vm` — exclusivo da instalação da VM |
 
 ## 3. Arquitetura
 
@@ -591,7 +597,282 @@ Na interface: **Configurações de administração → Configurações básicas 
 - [x] Chaves do Nextcloud e sessões PHP (`PHPREDIS_SESSION:*`) presentes no Redis
 - [x] Modo de tarefas em segundo plano = `cron`, com execuções a cada 5 minutos
 
-## 10. Segurança e boas práticas
+## 10. Deploy na VM da OCI (Fase 2)
+
+O mesmo `oci-bucket/docker-compose.yml` é implantado numa VM **Always Free** da OCI. Nada no compose muda — apenas o `.env`.
+
+### 10.1 Visão geral e decisões
+
+```mermaid
+flowchart LR
+    PC[Seu PC<br/>navegador em localhost:8090] -->|túnel SSH<br/>porta 22, criptografado| SL{{Security List<br/>só TCP 22 do seu IP}}
+    SL --> VM[VM Ampere A1<br/>Ubuntu 24.04 + Docker]
+    VM -->|127.0.0.1:8080| N[Nextcloud + Postgres<br/>+ Redis + cron]
+    N -->|S3 HTTPS| B[(bucket nextcloud-vm)]
+```
+
+| Decisão | Motivo |
+|---|---|
+| **Shape `VM.Standard.A1.Flex` com 2 OCPUs / 12 GB** | Limite atual do Always Free para A1. Acima disso, a instância pode ser desativada. A `E2.1.Micro` (1 GB) é pouco para Nextcloud + Postgres |
+| **Bucket exclusivo `nextcloud-vm`** | O Nextcloud exige acesso exclusivo ao bucket. Duas instalações no mesmo bucket gerariam os mesmos `urn:oid:<id>` e **sobrescreveriam os objetos uma da outra** |
+| **Nenhuma porta do Nextcloud aberta na internet** | Sem HTTPS (Fase 2.1), login e arquivos trafegariam em texto puro. O acesso é feito por **túnel SSH** |
+| **Nextcloud publicado só em `127.0.0.1:8080` na VM** | O Docker, ao publicar portas, cria regras próprias de iptables e **ignora o firewall do SO** (ufw/firewalld). Escutar só no loopback garante que a porta não fica exposta nem se a Security List for aberta por engano |
+| **SSH restrito ao IP de quem administra** | Elimina a maior parte das varreduras e tentativas de login automáticas |
+| **Imagem Ubuntu 24.04 (não a Minimal)** | Recomendada pela OCI para Arm; é a distribuição do guia oficial de instalação do Docker |
+
+### 10.2 Chave SSH dedicada (no PC)
+
+Uma chave **só para esta VM**, separada da usada no GitHub — se uma vazar, a outra não é afetada:
+
+```powershell
+ssh-keygen -t ed25519 -C "oci-nextcloud-vm" -f "$HOME\.ssh\oci_nextcloud_vm"
+```
+
+- Defina uma **passphrase**: ela protege a chave privada caso o arquivo seja copiado;
+- `oci_nextcloud_vm` é a chave **privada** — nunca sai do PC (a Oracle não guarda cópia);
+- `oci_nextcloud_vm.pub` é a chave **pública** — é a que vai para a OCI.
+
+### 10.3 Rede: VCN com o assistente
+
+Menu ☰ → **Networking** → **Virtual cloud networks** → compartment raiz:
+
+![Lista de VCNs no console da OCI](assets/06-oci-vcn-lista.png)
+
+**Actions** → **Start VCN Wizard**:
+
+![Menu Actions com Start VCN Wizard](assets/07-oci-vcn-start-wizard.png)
+
+Escolha **Create VCN with Internet Connectivity**:
+
+![Opções do assistente de VCN](assets/08-oci-vcn-wizard-tipo.png)
+
+Nome `vcn-nextcloud`, mantendo os blocos padrão:
+
+![Configuração do CIDR da VCN](assets/09-oci-vcn-cidr.png)
+
+![Configuração das subnets pública e privada](assets/10-oci-vcn-subnets.png)
+
+| Recurso criado | CIDR / função | Usado aqui? |
+|---|---|---|
+| VCN | `10.0.0.0/16` — a rede privada na nuvem | ✅ |
+| Subnet pública | `10.0.0.0/24` — onde fica a VM, com IP público | ✅ |
+| Internet Gateway | rota da subnet pública para a internet | ✅ |
+| Subnet privada + NAT Gateway | `10.0.1.0/24` — VMs sem IP público | não |
+| Service Gateway | acesso aos serviços Oracle sem passar pela internet | otimização futura |
+
+### 10.4 Restringir o SSH ao seu IP
+
+O assistente libera a porta 22 para `0.0.0.0/0`. Na VCN → **Security** → **Default Security List for vcn-nextcloud** (a lista associada à subnet **pública**) → regra de entrada **TCP / porta de destino 22** → **Edit**:
+
+| Campo | Valor |
+|---|---|
+| Stateless | desligado (regra *stateful*: as respostas voltam automaticamente) |
+| Source CIDR | `<seu-ip-público>/32` — o `/32` significa "exatamente este endereço" |
+| Source Port Range | vazio (o cliente usa uma porta de origem aleatória) |
+| Destination Port Range | `22` |
+
+Para descobrir o IP público: `(Invoke-RestMethod https://ifconfig.me/ip)`.
+
+> [!NOTE]
+> As regras **ICMP** (tipo 3) da mesma lista devem ser mantidas: são mensagens de controle de rede (como Path MTU Discovery), não abrem serviços. Se o IP residencial mudar, o SSH passa a dar *timeout* — basta atualizar esta regra.
+
+### 10.5 Criar a VM
+
+Menu ☰ → **Compute** → **Instances** → **Create instance**:
+
+![Tela de instâncias do Compute](assets/11-oci-compute-instances.png)
+
+| Campo | Valor |
+|---|---|
+| Name | `nextcloud-vm` |
+| Image | **Change image** → **Ubuntu** → **Canonical Ubuntu 24.04** (não a *Minimal*) |
+| Shape | **Change shape** → *Virtual machine* → **Ampere** → expandir **VM.Standard.A1.Flex** (etiqueta *Always Free-eligible*) → **2 OCPUs / 12 GB** |
+| Networking | VCN `vcn-nextcloud` → **subnet pública** → ✅ *Automatically assign public IPv4 address* |
+| SSH keys | **Upload public key files (.pub)** → `oci_nextcloud_vm.pub` |
+| Boot volume | padrão (o Always Free inclui 200 GB de block volume na home region) |
+
+> [!WARNING]
+> **Armadilhas encontradas no console:**
+>
+> - A shape sugerida por padrão (`VM.Standard.E5.Flex`, AMD) **não é gratuita**. Confira a etiqueta *Always Free-eligible*. As shapes `A2.Flex` e `A4.Ax.Flex`, também ARM, são pagas;
+> - O seletor de shape abre com **1 OCPU / 6 GB**: os controles de OCPU e memória ficam escondidos — é preciso expandir a linha da shape (seta ▸);
+> - A imagem padrão é **Oracle Linux**. Neste laboratório, a troca para Ubuntu acabou não sendo aplicada na primeira tentativa e a VM nasceu com Oracle Linux. **Confira o resumo antes de criar** — tanto a shape quanto a imagem;
+> - A **estimativa de custo** do console (ex.: valor mensal do boot volume) *"does not reflect any tier unit pricing"* — ela não desconta o Always Free;
+> - Se aparecer `Out of host capacity`, é falta temporária de capacidade ARM gratuita na região: tente mais tarde.
+
+> [!TIP]
+> Configure um **Budget** (Billing & Cost Management → Budgets) com valor baixo e alerta por e-mail: se algo começar a ser cobrado por engano, você fica sabendo no mesmo dia.
+
+### 10.6 Primeiro acesso e atualização do sistema
+
+```powershell
+ssh -i "$HOME\.ssh\oci_nextcloud_vm" ubuntu@<IP-PUBLICO>
+```
+
+O usuário padrão depende da imagem: `ubuntu` no Ubuntu, `opc` no Oracle Linux. Um `Permission denied (publickey,gssapi-keyex,gssapi-with-mic)` com o usuário `ubuntu` indica que a VM foi criada com **Oracle Linux** (os métodos `gssapi-*` são típicos da família RHEL).
+
+Conferência e atualização na VM:
+
+```bash
+uname -m; lsb_release -ds; nproc; free -h   # aarch64, Ubuntu 24.04, 2 CPUs, ~11 GiB
+sudo apt update
+sudo apt full-upgrade -y
+[ -f /var/run/reboot-required ] && echo "PRECISA REINICIAR" || echo "nao precisa"
+sudo reboot                                  # se pedido (ex.: kernel novo)
+```
+
+> [!NOTE]
+> O Ubuntu vem com o **`unattended-upgrades`** ativo: atualizações de segurança — inclusive kernels — são instaladas sozinhas em segundo plano, mas o **reboot continua manual**. Por isso o aviso *Pending kernel upgrade* pode reaparecer mesmo após um reboot recente.
+>
+> A documentação da OCI alerta: **não use o UFW** para editar o firewall das imagens Ubuntu — ele pode remover regras essenciais e impedir a VM de iniciar.
+
+### 10.7 Instalar o Docker Engine
+
+Pelo **repositório oficial da Docker** (o pacote `docker.io` do Ubuntu costuma ficar defasado), conforme o [guia oficial](https://docs.docker.com/engine/install/ubuntu/):
+
+```bash
+# 1. Remover pacotes conflitantes (numa VM nova, normalmente nenhum)
+sudo apt remove $(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc | cut -f1)
+
+# 2. Chave GPG do repositório (garante que os pacotes são assinados pela Docker)
+sudo apt update
+sudo apt install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# 3. Repositório no formato deb822 (Suites = noble, Architectures = arm64)
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+
+# 4. Instalação (o serviço já inicia e sobe com o sistema no Ubuntu)
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 5. Usar o Docker sem sudo (requer sair e entrar de novo no SSH)
+sudo usermod -aG docker $USER
+```
+
+> [!WARNING]
+> O grupo `docker` **equivale a acesso root** (*"The docker group grants root-level privileges to the user"*). Aqui o risco não aumenta, pois o usuário `ubuntu` já tem `sudo` sem senha; em servidores multiusuário, trate a inclusão no grupo como concessão de root.
+
+Verificação:
+
+```bash
+docker version --format 'Engine {{.Server.Version}} / {{.Server.Arch}}'   # Engine 29.10.0 / arm64
+docker compose version                                                    # v5.8.0
+docker run --rm hello-world                                               # baixa a build arm64v8
+docker run --rm alpine sh -c 'wget -q --spider https://download.docker.com && echo "container com internet: OK"'
+```
+
+O último teste confirma que as regras de firewall da imagem da OCI e as do Docker convivem — containers conseguem acessar a internet.
+
+### 10.8 Levar o projeto e o `.env` para a VM
+
+Código e segredos seguem caminhos diferentes:
+
+```text
+código (compose, README) ── git clone ──▶ VM   (versionado)
+segredos (.env)          ── scp (SSH) ──▶ VM   (nunca passa pelo Git)
+```
+
+Pré-requisito: criar no console o bucket **`nextcloud-vm`**, com as mesmas configurações da [seção 5.2](#52-criar-o-bucket).
+
+```bash
+# Na VM
+git clone https://github.com/Madusalves/nextcloud-oci-lab.git
+```
+
+```powershell
+# No PC (PowerShell), a partir da raiz do repositório — depois do git clone na VM
+scp -i "$HOME\.ssh\oci_nextcloud_vm" oci-bucket\.env ubuntu@<IP-PUBLICO>:/home/ubuntu/nextcloud-oci-lab/oci-bucket/.env
+```
+
+Ajustes no `.env` da VM — é **outra instalação**:
+
+```bash
+cd ~/nextcloud-oci-lab/oci-bucket
+chmod 600 .env                                                         # só o dono lê/escreve
+sed -i 's/^OBJECTSTORE_S3_BUCKET=.*/OBJECTSTORE_S3_BUCKET=nextcloud-vm/' .env
+for k in POSTGRES_PASSWORD REDIS_HOST_PASSWORD; do                     # senhas internas novas
+  sed -i "s/^$k=.*/$k=$(openssl rand -hex 24)/" .env
+done
+sed -i 's/^NEXTCLOUD_HTTP_PORT=.*/NEXTCLOUD_HTTP_PORT=127.0.0.1:8080/' .env   # só loopback
+nano .env                                                              # nova NEXTCLOUD_ADMIN_PASSWORD
+```
+
+- `openssl rand -hex 24` gera 48 caracteres `0-9a-f` — sem `$`, `&` ou outros caracteres que quebram o Compose ou a URL de sessão do Redis;
+- `NEXTCLOUD_HTTP_PORT=127.0.0.1:8080` vira `127.0.0.1:8080:80` no compose: o Docker escuta **só no loopback** da VM.
+
+Conferência (sem expor valores):
+
+```bash
+docker compose config --quiet && echo "OK"
+grep -E '^(OBJECTSTORE_S3_BUCKET|NEXTCLOUD_HTTP_PORT)=' .env    # nextcloud-vm / 127.0.0.1:8080
+ls -l .env                                                      # -rw-------
+```
+
+> [!CAUTION]
+> **Nunca troque o bucket no `.env` de uma instalação existente.** A instalação local continua em `nextcloud-teste`: o PostgreSQL dela sabe quais objetos `urn:oid:*` lhe pertencem, e apontá-la para outro bucket faria todos os arquivos "sumirem".
+
+### 10.9 Subir e acessar pelo túnel SSH
+
+Na VM:
+
+```bash
+docker compose up -d
+docker compose ps
+docker compose logs -f app            # até "Nextcloud was successfully installed"
+sudo ss -tlnp | grep 8080             # deve mostrar 127.0.0.1:8080, não 0.0.0.0:8080
+```
+
+No PC, abra o túnel (o terminal fica "parado" de propósito; fechá-lo derruba o túnel):
+
+```powershell
+ssh -i "$HOME\.ssh\oci_nextcloud_vm" -N -L 8090:127.0.0.1:8080 ubuntu@<IP-PUBLICO>
+```
+
+| Parte | Significado |
+|---|---|
+| `-L 8090:127.0.0.1:8080` | o que chega na porta **8090 do PC** sai, pela VM, em `127.0.0.1:8080` |
+| `-N` | só o túnel, sem abrir shell |
+| `8090` | a 8080 do PC já é usada pela instalação local |
+
+Acesse **`http://localhost:8090`**. Apesar do `http://`, o tráfego entre o PC e a VM está criptografado pelo SSH.
+
+Validação na VM:
+
+```bash
+docker compose exec -u www-data app php occ config:list system | grep -E '"memcache\.'
+docker compose exec -u www-data app php occ config:app:get core backgroundjobs_mode   # cron
+```
+
+### 10.10 Checklist da Fase 2
+
+- [x] VM `A1.Flex` 2 OCPUs / 12 GB com Ubuntu 24.04 (aarch64)
+- [x] SSH com chave dedicada; porta 22 restrita ao IP de quem administra
+- [x] Sistema atualizado e reiniciado no kernel novo
+- [x] Docker Engine 29.10.0 (arm64) e Compose v5.8.0; `hello-world` e internet nos containers OK
+- [x] `.env` enviado por `scp`, com permissão `600`, bucket `nextcloud-vm` e porta `127.0.0.1:8080`
+- [x] `memcache.distributed` e `memcache.locking` usando Redis
+- [x] Modo de tarefas em segundo plano = `cron`
+- [ ] `ss -tlnp` mostra o Nextcloud escutando apenas em `127.0.0.1:8080` *(a confirmar)*
+- [ ] Login pelo túnel SSH em `http://localhost:8090` *(a confirmar)*
+- [ ] Objetos `urn:oid:*` no bucket `nextcloud-vm`, e nenhum objeto novo no `nextcloud-teste` *(a confirmar)*
+
+> [!IMPORTANT]
+> **Limites do Always Free a acompanhar** (página oficial *Always Free Resources*):
+>
+> - **Object Storage:** 20 GB e **50.000 requisições de API por mês** no total — os dois buckets dividem essa cota, e com primary storage cada leitura, gravação ou miniatura é uma requisição;
+> - **VMs ociosas podem ser recuperadas** pela Oracle: CPU (percentil 95), rede e — no A1 — memória abaixo de 20% por 7 dias. Trate a VM como descartável: o repositório permite recriá-la; o que precisa ser preservado são o banco e o bucket.
+
+## 11. Segurança e boas práticas
 
 - **Nunca** registrar access key ou secret em documentos, prints, chats ou commits. Usar sempre placeholders (`<ACCESS_KEY>`) na documentação;
 - Se uma credencial for exposta, **revogá-la imediatamente** no console e gerar outra;
@@ -602,22 +883,26 @@ Na interface: **Configurações de administração → Configurações básicas 
 - **A credencial S3 fica gravada no volume:** na instalação, o Nextcloud grava o bloco `objectstore` completo — inclusive `key` e `secret` — no `config/config.php`, dentro do volume `nextcloud`. Proteja o acesso ao volume e trate **qualquer backup dele como sigiloso**. Se a chave for rotacionada, atualize também esse arquivo (via `occ config:system:set`), e não só o `.env`;
 - O Redis exige senha mesmo sem porta publicada, e nenhum serviço além do `app` expõe porta no host;
 - Fixar versões das imagens (ex.: `nextcloud:35-apache`), evitando `latest`. O Nextcloud só atualiza **uma versão principal por vez** (35 → 36 → 37);
-- Planejar backup do **PostgreSQL e do bucket em conjunto**.
+- Planejar backup do **PostgreSQL e do bucket em conjunto**;
+- **Na VM:** SSH apenas por chave, com chave dedicada e passphrase, e a porta 22 liberada só para o IP de quem administra;
+- **Na VM:** publicar o Nextcloud só em `127.0.0.1` enquanto não houver HTTPS — o Docker ignora o firewall do SO ao publicar portas, então a restrição precisa estar no próprio bind (e na Security List);
+- O `.env` chega à VM por `scp`, com `chmod 600`; o Git só transporta código;
+- **Uma instalação, um bucket:** nunca compartilhar o bucket entre instalações do Nextcloud.
 
-## 11. Próximos passos
+## 12. Próximos passos
 
 | Fase | Atividade |
 |---|---|
 | ~~Fase 1.1~~ ✅ | ~~Adicionar Redis (cache/locking) e container de cron ao compose~~ — concluída |
 | Fase 1.2 ⏳ | S3 local (RustFS) para desenvolvimento sem depender da OCI — **configurada, pendente de validação** ([seção 7.7](#77-setup-alternativo-com-rustfs)) |
-| Fase 2 | Deploy na VM da OCI com o mesmo compose |
-| Fase 2.1 | Proxy reverso com HTTPS, trusted domains e regras de rede (Security List/NSG + firewall do SO) |
+| ~~Fase 2~~ ✅ | ~~Deploy na VM da OCI com o mesmo compose~~ — concluída ([seção 10](#10-deploy-na-vm-da-oci-fase-2)); três verificações finais a confirmar no checklist 10.10 |
+| Fase 2.1 | Domínio, proxy reverso com HTTPS (Let's Encrypt), trusted domains e abertura das portas 80/443 (Security List/NSG + firewall do SO) |
 | Fase 2.2 | Usuário de serviço, compartment dedicado e policies de menor privilégio |
 | Fase 3 | Rotina de backup e teste de restauração (banco + bucket) |
 | Fase 4 | Editor de documentos online (Collabora ou OnlyOffice) — requer HTTPS |
 | Comparação | Validar a configuração final contra o `config.php` do ambiente de produção |
 
-## 12. Referências
+## 13. Referências
 
 - [Nextcloud — Configuring Object Storage as Primary Storage](https://docs.nextcloud.com/server/stable/admin_manual/configuration_files/primary_storage.html)
 - [Imagem oficial do Nextcloud (variáveis de ambiente)](https://github.com/nextcloud/docker)
@@ -629,3 +914,11 @@ Na interface: **Configurações de administração → Configurações básicas 
 - [Exemplo oficial com Postgres + Redis + cron (nextcloud/docker)](https://github.com/nextcloud/docker/blob/master/.examples/docker-compose/insecure/postgres/apache/compose.yaml)
 - [OCI — Amazon S3 Compatibility API](https://docs.oracle.com/iaas/Content/Object/Tasks/s3compatibleapi.htm)
 - [OCI — Gerenciamento de credenciais (Customer Secret Keys)](https://docs.oracle.com/iaas/Content/Identity/Tasks/managingcredentials.htm)
+- [OCI — Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
+- [OCI — Virtual Networking Quickstart (VCN Wizard)](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/quickstartnetworking.htm)
+- [OCI — Security Lists](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securitylists.htm)
+- [OCI — Creating an Instance](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/launchinginstance.htm)
+- [OCI — Managing Key Pairs on Linux Instances](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/managingkeypairs.htm)
+- [OCI — Platform Images (usuários padrão e firewall)](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm)
+- [Docker — Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)
+- [Docker — Linux post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/)
