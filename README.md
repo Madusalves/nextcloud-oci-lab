@@ -535,6 +535,24 @@ No console da OCI: **Buckets → nextcloud-teste → Objects**. Logo após a ins
 
 ![Objetos gravados pelo Nextcloud no bucket da OCI](assets/05-oci-bucket-objetos.png)
 
+#### Encontrar o objeto de um arquivo específico
+
+A lista do console é ordenada **alfabeticamente** pelo nome (`urn:oid:11`, `urn:oid:110`, `urn:oid:12`...) e não atualiza sozinha — um arquivo recém-enviado pode não aparecer na primeira página. Para localizar o objeto exato, consulte o `fileid` no banco, onde o Nextcloud guarda os metadados:
+
+```bash
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select fileid, path, size from oc_filecache where name = '"'"'<nome-do-arquivo>'"'"';"'
+```
+
+Exemplo de saída:
+
+```text
+ fileid |                 path                   | size
+--------+----------------------------------------+-------
+     97 | files/Engenharia de Requisitos.docx    | 18687
+```
+
+No console, busque pelo prefixo **`urn:oid:97`** (campo *Search object by name or prefix*): o objeto deve ter o mesmo tamanho (`size`, em bytes) do arquivo. É a demonstração prática do modelo da seção 3 — o nome do arquivo existe **só** no PostgreSQL; no bucket, apenas o `fileid`.
+
 ### 9.3 Comandos úteis (`occ`)
 
 ```powershell
@@ -591,7 +609,7 @@ Na interface: **Configurações de administração → Configurações básicas 
 - [x] Tela de login acessível em `:8080`
 - [x] Login como admin carrega o dashboard
 - [x] Bucket contém objetos `urn:oid:*` após a instalação
-- [ ] Upload de arquivo gera um novo objeto `urn:oid` no bucket
+- [x] Upload de arquivo gera um novo objeto `urn:oid` no bucket (validado na VM: `fileid` 97 → objeto `urn:oid:97`, 18.687 bytes)
 - [x] `db` e `redis` com status `healthy`
 - [x] `memcache.distributed` e `memcache.locking` usando Redis
 - [x] Chaves do Nextcloud e sessões PHP (`PHPREDIS_SESSION:*`) presentes no Redis
